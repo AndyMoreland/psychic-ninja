@@ -7,8 +7,9 @@ var sjcl = require("./sjcl");
 //  Cryptographic primitives
 ////////////////////////////////////////////////////////////////////////////////
 
+// FIXME: I added an extra argument here
 var KDF = function(password, salt) {
-  return sjcl.misc.pbkdf2(password, salt, 100000);
+  return sjcl.misc.pbkdf2(password, salt, 100000, 128);
   // Takes about a second on a commodity laptop.
 };
 
