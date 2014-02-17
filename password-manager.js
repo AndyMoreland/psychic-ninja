@@ -89,7 +89,7 @@ var keychain = function() {
      * Arguments:
      *   password:           string
      *   repr:               string
-     *   trusted_data_check: string
+k     *   trusted_data_check: string
      * Return Type: boolean
      */
 		keychain.load = function(password, repr, trusted_data_check) {
@@ -133,11 +133,14 @@ var keychain = function() {
 						return null;
 				}
 
-				console.log("Attempting to use: ", result, " for ", name);
+				// console.log("Attempting to use: ", result, " for ", name);
 				var padded_password = keychain.decrypt(result.password);
-				var length = keychain.decrypt(result.length);
-				
-				return string_from_padded_bitarray(padded_password, length); // FIXME bytearray?
+				var length = parseInt(bitarray_to_string(keychain.decrypt(result.length)), 10);
+
+				// console.log(padded_password, length)
+
+				// Note: string_From_padded_bitarray seems to want the total length of the string
+				return string_from_padded_bitarray(padded_password, 64); // FIXME bytearray?
 		}
 
 		/** 
@@ -161,7 +164,7 @@ var keychain = function() {
 				var padded_password = string_to_padded_bitarray(value, 64);
 				var encrypted_password = keychain.encrypt(padded_password);
 				
-				var encrypted_length = keychain.encrypt("" + value.length); // FIXME: make sure that we don't leak length information'
+				var encrypted_length = keychain.encrypt(string_to_bitarray("" + value.length)); // FIXME: make sure that we don't leak length information'
 				//console.log("Encrypted length is: ", encrypted_length)
 				
 				var entry = {
@@ -171,7 +174,7 @@ var keychain = function() {
 				};
 
 				priv.data[key] = entry;
-				console.log("Storing ", entry, " for ", name);
+				// console.log("Storing ", entry, " for ", name);
 		}
 
 		/**
