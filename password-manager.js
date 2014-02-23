@@ -58,6 +58,35 @@ var keychain = function() {
 				return dec_gcm(priv.secrets.cipher, ciphertext);
 		};
 
+		keychain.HMAC_message = function (plaintext) {
+				return HMAC(priv.secrets.HMAC_key,string_to_bitarray(plaintext));
+		};
+
+
+		keychain.key_from_bitarray = function(bitarray) {
+				return bitarray_slice(bitarray, 0, 128);
+		};
+
+		keychain.generate_four_keys_from_password = function (salt, password) {
+				var password_bitarray = string_to_bitarray(password);
+
+				var root_key = KDF(password_bitarray, salt);
+
+				var derived_mac = HMAC(root_key, root_key);
+
+				var second_derived_mac_1 = HMAC(bitarray_slice(derived_mac, 0, 128), bitarray_slice(derived_mac, 0, 128));
+				var second_derived_mac_2 = HMAC(bitarray_slice(derived_mac, 128, 256), bitarray_slice(derived_mac, 128, 256));
+
+				var final_keys = [];
+
+				final_keys.push(bitarray_slice(second_derived_mac_1, 0, 128));
+				final_keys.push(bitarray_slice(second_derived_mac_1, 128, 256));
+				final_keys.push(bitarray_slice(second_derived_mac_2, 0, 128));
+				final_keys.push(bitarray_slice(second_derived_mac_2, 128, 256));
+
+				return final_keys;
+		};
+
 		/** 
      * Creates an empty keychain with the given password. Once init is called,
      * the password manager should be in a ready state.
@@ -68,11 +97,18 @@ var keychain = function() {
      */
 		keychain.init = function(password) {
 				priv.data.version = "CS 255 Password Manager v1.0";
-				var salt = "" // FIXME make this random
-				priv.secrets.salt = salt;
-				priv.secrets.key = KDF(password, salt);
-				priv.secrets.cipher = setup_cipher(priv.secrets.key);
+				priv.data.salt = random_bitarray(128);
+
+				var keys = keychain.generate_four_keys_from_password(priv.data.salt, password);
+
         ready = true;
+				priv.data.storage = {};
+				priv.data.verification_key = keys[0];
+				priv.secrets.HMAC_key = keys[1];
+				priv.secrets.password_key = keys[2];
+				priv.secrets.authentication_key = keys[3];
+				priv.secrets.cipher = setup_cipher(priv.secrets.password_key);
+				priv.secrets.counter = 0;
 		};
 
 		/**
@@ -93,7 +129,28 @@ k     *   trusted_data_check: string
      * Return Type: boolean
      */
 		keychain.load = function(password, repr, trusted_data_check) {
-				throw "Not implemented!";
+				priv.secrets.counter = trusted_data_check;
+				
+				var disk_representation = JSON.parse(repr);
+				priv.data = disk_representation.data; 
+
+				var keys = keychain.generate_four_keys_from_password(priv.data.salt, password);
+
+				if (!bitarray_equal(keys[0], priv.data.verification_key)) {
+						throw "Incorrect password!";
+				}
+
+				priv.secrets.HMAC_key = keys[1];
+				priv.secrets.password_key = keys[2];
+				priv.secrets.authentication_key = keys[3];
+				priv.secrets.cipher = setup_cipher(priv.secrets.password_key);
+				ready = true;
+
+				if (trusted_data_check !== undefined) {
+						if (!bitarray_equal(HMAC(priv.secrets.authentication_key, string_to_bitarray(JSON.stringify(priv.data) + "," + priv.secrets.counter)), disk_representation.authenticity_token)) {
+								throw "Tampering detected: rollback attack?";
+						}
+				}
 		};
 
 		/**
@@ -110,7 +167,19 @@ k     *   trusted_data_check: string
      * Return Type: array
      */ 
 		keychain.dump = function() {
-				throw "Not implemented!";
+				priv.secrets.counter++;
+				
+				var return_value = [];
+				
+				var disk_representation = {
+						data: priv.data,
+						authenticity_token: HMAC(priv.secrets.authentication_key, string_to_bitarray(JSON.stringify(priv.data) + "," + priv.secrets.counter))
+				}
+
+				return_value[0] = JSON.stringify(disk_representation);
+				return_value[1] = priv.secrets.counter;
+
+				return return_value;
 		}
 
 		/**
@@ -126,21 +195,19 @@ k     *   trusted_data_check: string
 		keychain.get = function(name) {
 				if (!ready) { throw "Not yet initialized."; }
 
-				var key = HMAC(priv.secrets.key, name);
-				var result = priv.data[key];
+				var key = keychain.HMAC_message(name);
+				var result = priv.data.storage[key];
 
 				if (!result) {
 						return null;
 				}
 
-				// console.log("Attempting to use: ", result, " for ", name);
-				var padded_password = keychain.decrypt(result.password);
-				var length = parseInt(bitarray_to_string(keychain.decrypt(result.length)), 10);
+				var password = string_from_padded_bitarray(keychain.decrypt(result.password), 64);
+				var length = parseInt(string_from_padded_bitarray(keychain.decrypt(result.length), 16), 10);
 
-				// console.log(padded_password, length)
+				if (!bitarray_equal(result.authenticity_token, keychain.HMAC_message(key + result.length + result.password))) { throw "Suspected tampering."; }
 
-				// Note: string_From_padded_bitarray seems to want the total length of the string
-				return string_from_padded_bitarray(padded_password, 64); // FIXME bytearray?
+				return password;
 		}
 
 		/** 
@@ -159,22 +226,21 @@ k     *   trusted_data_check: string
 				if(value.length > 64) { throw "Password is too long"; }
 				
 
-				var key = HMAC(priv.secrets.key, name);
-				//console.log("Attempting to store ", name, " with key ", key, ". The password is: ", value);
+				var key = keychain.HMAC_message(name);
 				var padded_password = string_to_padded_bitarray(value, 64);
 				var encrypted_password = keychain.encrypt(padded_password);
 				
-				var encrypted_length = keychain.encrypt(string_to_bitarray("" + value.length)); // FIXME: make sure that we don't leak length information'
-				//console.log("Encrypted length is: ", encrypted_length)
+				// 16 chosen to exceed maximum possible size of the string representation of an integer
+				// realistically this should never be more than 2 digits, though
+				var encrypted_length = keychain.encrypt(string_to_padded_bitarray("" + value.length, 16)); // FIXME: make sure that we don't leak length information'
 				
 				var entry = {
 						length: encrypted_length,
 						password: encrypted_password,
-						authenticity_token: HMAC(priv.secrets.key, key + encrypted_length + encrypted_password)
+						authenticity_token: keychain.HMAC_message(key + encrypted_length + encrypted_password)
 				};
 
-				priv.data[key] = entry;
-				// console.log("Storing ", entry, " for ", name);
+				priv.data.storage[key] = entry;
 		}
 
 		/**
@@ -189,9 +255,9 @@ k     *   trusted_data_check: string
 		keychain.remove = function(name) {
 				if (!ready) { throw "Not yet initialized."; }
 				
-				var key = HMAC(priv.secrets.key, name);
-				if (priv.data[key]) {
-						delete priv.data[key];
+				var key = keychain.HMAC_message(name);
+				if (priv.data.storage[key]) {
+						delete priv.data.storage[key];
             return true;
 				} else {
 						return false;
