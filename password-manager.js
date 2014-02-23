@@ -67,6 +67,7 @@ var keychain = function() {
 				return bitarray_slice(bitarray, 0, 128);
 		};
 
+		// Here we derive four keys from the initial password
 		keychain.generate_four_keys_from_password = function (salt, password) {
 				var password_bitarray = string_to_bitarray(password);
 
@@ -74,8 +75,8 @@ var keychain = function() {
 
 				var derived_mac = HMAC(root_key, root_key);
 
-				var second_derived_mac_1 = HMAC(bitarray_slice(derived_mac, 0, 128), bitarray_slice(derived_mac, 0, 128));
-				var second_derived_mac_2 = HMAC(bitarray_slice(derived_mac, 128, 256), bitarray_slice(derived_mac, 128, 256));
+				var second_derived_mac_1 = HMAC(root_key, string_to_bitarray("" + 0));
+				var second_derived_mac_2 = HMAC(root_key, string_to_bitarray("" + 1));
 
 				var final_keys = [];
 
@@ -135,7 +136,7 @@ k     *   trusted_data_check: string
 				priv.data = disk_representation.data; 
 
 				var keys = keychain.generate_four_keys_from_password(priv.data.salt, password);
-
+ 
 				if (!bitarray_equal(keys[0], priv.data.verification_key)) {
 						throw "Incorrect password!";
 				}
@@ -147,7 +148,9 @@ k     *   trusted_data_check: string
 				ready = true;
 
 				if (trusted_data_check !== undefined) {
-						if (!bitarray_equal(HMAC(priv.secrets.authentication_key, string_to_bitarray(JSON.stringify(priv.data) + "," + priv.secrets.counter)), disk_representation.authenticity_token)) {
+						if (!bitarray_equal(
+								HMAC(priv.secrets.authentication_key, string_to_bitarray(JSON.stringify(priv.data) + "," + priv.secrets.counter)), 
+								disk_representation.authenticity_token)) {
 								throw "Tampering detected: rollback attack?";
 						}
 				}
@@ -203,9 +206,8 @@ k     *   trusted_data_check: string
 				}
 
 				var password = string_from_padded_bitarray(keychain.decrypt(result.password), 64);
-				var length = parseInt(string_from_padded_bitarray(keychain.decrypt(result.length), 16), 10);
 
-				if (!bitarray_equal(result.authenticity_token, keychain.HMAC_message(key + result.length + result.password))) { throw "Suspected tampering."; }
+				if (!bitarray_equal(result.authenticity_token, keychain.HMAC_message(key + result.password))) { throw "Suspected tampering."; }
 
 				return password;
 		}
@@ -232,12 +234,10 @@ k     *   trusted_data_check: string
 				
 				// 16 chosen to exceed maximum possible size of the string representation of an integer
 				// realistically this should never be more than 2 digits, though
-				var encrypted_length = keychain.encrypt(string_to_padded_bitarray("" + value.length, 16)); // FIXME: make sure that we don't leak length information'
 				
 				var entry = {
-						length: encrypted_length,
 						password: encrypted_password,
-						authenticity_token: keychain.HMAC_message(key + encrypted_length + encrypted_password)
+						authenticity_token: keychain.HMAC_message(key + encrypted_password)
 				};
 
 				priv.data.storage[key] = entry;
