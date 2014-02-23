@@ -45,7 +45,7 @@ var keychain = function() {
 		var MAX_PW_LEN_BYTES = 64;
 		
 		// Flag to indicate whether password manager is "ready" or not
-		var ready = false;;
+		var ready = false;
 
 		var keychain = {};
 
@@ -73,8 +73,6 @@ var keychain = function() {
 
 				var root_key = KDF(password_bitarray, salt);
 
-				var derived_mac = HMAC(root_key, root_key);
-
 				var second_derived_mac_1 = HMAC(root_key, string_to_bitarray("" + 0));
 				var second_derived_mac_2 = HMAC(root_key, string_to_bitarray("" + 1));
 
@@ -87,6 +85,38 @@ var keychain = function() {
 
 				return final_keys;
 		};
+
+		// serializes a single domain's entry deterministically
+		keychain.deterministic_serialize_entry = function (key) {
+				return bitarray_to_base64(key) +
+						bitarray_to_base64(priv.data.storage[key].password) + 
+						bitarray_to_base64(priv.data.storage[key].authenticity_token);
+		};
+
+		// This is deterministic and injective: any two unique keychains will always produce the same output
+		// 
+		// It is injective because everything we serialize has a fixed length, so we never have inconvenient
+		// collisions in output between unique keychains.
+		//	
+		// It is deterministic because we impose an ordering on the data before it is serialized
+		keychain.deterministic_serialize_data = function (data) {
+				var serialized_data = bitarray_to_base64(data.verification_key);
+
+				var keys = []
+				for (var k in data.storage) { keys.push(k); }
+
+				// sorts in place
+				keys.sort( function (key1, key2) { return bitarray_to_base64(key1) <  bitarray_to_base64(key2) } );
+
+				for (var k in keys) {
+						if (data.storage.hasOwnProperty(k)) {
+								serialized_data += keychain.deterministic_serialize_entry(k);
+						}
+				}
+
+				return serialized_data;
+		};
+		
 
 		/** 
      * Creates an empty keychain with the given password. Once init is called,
@@ -126,7 +156,7 @@ var keychain = function() {
      * Arguments:
      *   password:           string
      *   repr:               string
-k     *   trusted_data_check: string
+     *   trusted_data_check: string
      * Return Type: boolean
      */
 		keychain.load = function(password, repr, trusted_data_check) {
@@ -149,11 +179,18 @@ k     *   trusted_data_check: string
 
 				if (trusted_data_check !== undefined) {
 						if (!bitarray_equal(
-								HMAC(priv.secrets.authentication_key, string_to_bitarray(JSON.stringify(priv.data) + "," + priv.secrets.counter)), 
+								HMAC(priv.secrets.authentication_key, 
+										 string_to_bitarray(keychain.deterministic_serialize_data(priv.data) + "," + priv.secrets.counter)), 
 								disk_representation.authenticity_token)) {
+
+								ready = false;
 								throw "Tampering detected: rollback attack?";
+
+								return false; // this line shouldn't happen'
 						}
 				}
+
+				return true;
 		};
 
 		/**
@@ -170,13 +207,16 @@ k     *   trusted_data_check: string
      * Return Type: array
      */ 
 		keychain.dump = function() {
+				if (!ready) { throw "Not yet initialized."; }
+
 				priv.secrets.counter++;
 				
 				var return_value = [];
 				
 				var disk_representation = {
 						data: priv.data,
-						authenticity_token: HMAC(priv.secrets.authentication_key, string_to_bitarray(JSON.stringify(priv.data) + "," + priv.secrets.counter))
+						authenticity_token: HMAC(priv.secrets.authentication_key, 
+																		 string_to_bitarray(keychain.deterministic_serialize_data(priv.data) + "," + priv.secrets.counter))
 				}
 
 				return_value[0] = JSON.stringify(disk_representation);
@@ -207,7 +247,8 @@ k     *   trusted_data_check: string
 
 				var password = string_from_padded_bitarray(keychain.decrypt(result.password), 64);
 
-				if (!bitarray_equal(result.authenticity_token, keychain.HMAC_message(key + result.password))) { throw "Suspected tampering."; }
+				if (!bitarray_equal(result.authenticity_token, 
+														keychain.HMAC_message(bitarray_concat(key, result.password)))) { throw "Suspected tampering."; }
 
 				return password;
 		}
@@ -237,7 +278,7 @@ k     *   trusted_data_check: string
 				
 				var entry = {
 						password: encrypted_password,
-						authenticity_token: keychain.HMAC_message(key + encrypted_password)
+						authenticity_token: keychain.HMAC_message(bitarray_concat(key, encrypted_password))
 				};
 
 				priv.data.storage[key] = entry;

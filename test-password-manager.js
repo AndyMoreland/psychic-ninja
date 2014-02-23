@@ -30,6 +30,22 @@ for (var k in kvs) {
 }
 assert(keychain.get("service4") === null);
 
+
+var kvs = { "service1": "value3", 
+            "service2": "value2",
+            "service3": "value1" };
+
+console.log("Adding keys to password manager");
+for (var k in kvs) {
+  keychain.set(k, kvs[k]);
+}
+
+console.log("Testing get");
+for (var k in kvs) {
+  assert(keychain.get(k) === kvs[k], "Get failed for key " + k);
+}
+assert(keychain.get("service4") === null);
+
 console.log("Testing remove");
 assert(keychain.remove("service1"));
 assert(!keychain.remove("service4"));
@@ -51,3 +67,9 @@ for (var k in kvs) {
 }
 
 console.log("All tests passed!");
+
+new_keychain.set("coolservice", "coolpassword");
+var data2 = new_keychain.dump();
+
+var last_keychain = password_manager.keychain();
+last_keychain.load(password, data2[0], data2[1]);
